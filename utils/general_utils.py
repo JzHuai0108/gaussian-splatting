@@ -18,14 +18,17 @@ import random
 def inverse_sigmoid(x):
     return torch.log(x/(1-x))
 
-def PILtoTorch(pil_image, resolution):
-    resized_image_PIL = pil_image.resize(resolution)
+def PILtoTorch(pil_image, resolution=None):
+    if resolution is None:
+        resized_image_PIL = pil_image
+    else:
+        resized_image_PIL = pil_image.resize(resolution)
     resized_image = torch.from_numpy(np.array(resized_image_PIL)) / 255.0
     if len(resized_image.shape) == 3:
         return resized_image.permute(2, 0, 1)
     else:
         return resized_image.unsqueeze(dim=-1).permute(2, 0, 1)
-
+    
 def get_expon_lr_func(
     lr_init, lr_final, lr_delay_steps=0, lr_delay_mult=1.0, max_steps=1000000
 ):
@@ -58,7 +61,6 @@ def get_expon_lr_func(
         t = np.clip(step / max_steps, 0, 1)
         log_lerp = np.exp(np.log(lr_init) * (1 - t) + np.log(lr_final) * t)
         return delay_rate * log_lerp
-
     return helper
 
 def strip_lowerdiag(L):
@@ -97,6 +99,13 @@ def build_rotation(r):
     R[:, 2, 1] = 2 * (y*z + r*x)
     R[:, 2, 2] = 1 - 2 * (x*x + y*y)
     return R
+
+def build_scaling(s):
+    L = torch.zeros((s.shape[0], 3, 3), dtype=torch.float, device="cuda")
+    L[:,0,0] = s[:,0]
+    L[:,1,1] = s[:,1]
+    L[:,2,2] = s[:,2]
+    return L
 
 def build_scaling_rotation(s, r):
     L = torch.zeros((s.shape[0], 3, 3), dtype=torch.float, device="cuda")

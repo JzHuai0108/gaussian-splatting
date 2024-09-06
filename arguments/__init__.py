@@ -54,6 +54,12 @@ class ModelParams(ParamGroup):
         self._white_background = False
         self.data_device = "cuda"
         self.eval = False
+        self.preload_img = True
+        self.ncc_scale = 1.0
+        self.multi_view_num = 8
+        self.multi_view_max_angle = 30
+        self.multi_view_min_dis = 0.01
+        self.multi_view_max_dis = 1.5
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
@@ -79,13 +85,33 @@ class OptimizationParams(ParamGroup):
         self.opacity_lr = 0.05
         self.scaling_lr = 0.005
         self.rotation_lr = 0.001
-        self.percent_dense = 0.01
+        self.percent_dense = 0.001
         self.lambda_dssim = 0.2
         self.densification_interval = 100
         self.opacity_reset_interval = 3000
         self.densify_from_iter = 500
         self.densify_until_iter = 15_000
         self.densify_grad_threshold = 0.0002
+        
+        self.single_view_weight = 0.015
+        self.single_view_weight_from_iter = 7000
+
+        self.use_virtul_cam = False
+        self.virtul_cam_prob = 0.5
+        self.use_multi_view_trim = True
+        self.multi_view_ncc_weight = 0.15
+        self.multi_view_geo_weight = 0.03
+        self.multi_view_weight_from_iter = 7000
+        self.multi_view_patch_size = 3
+        self.multi_view_sample_num = 102400
+        self.multi_view_pixel_noise_th = 1.0
+
+        self.opacity_cull_threshold = 0.005
+        self.densify_abs_grad_threshold = 0.0008
+        self.abs_split_radii2D_threshold = 20
+        self.max_abs_split_points = 50_000
+        self.max_all_points = 6000_000
+        self.exposure_compensation = False
         self.random_background = False
         super().__init__(parser, "Optimization Parameters")
 

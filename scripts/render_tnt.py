@@ -8,10 +8,14 @@
 #
 # For inquiries contact  george.drettakis@inria.fr
 #
+import os, sys
+from pathlib import Path
+dir_path = Path(os.path.dirname(os.path.realpath(__file__))).parents[0]
+print(f"dir_path {dir_path}")
+sys.path.append(dir_path.__str__())
 
 import torch
 from scene import Scene
-import os
 import json
 from tqdm import tqdm
 from os import makedirs
@@ -25,7 +29,7 @@ import numpy as np
 import cv2
 import open3d as o3d
 from scene.app_model import AppModel
-import copy
+import trimesh, copy
 from collections import deque
 
 def clean_mesh(mesh, min_len=1000):
@@ -41,6 +45,14 @@ def clean_mesh(mesh, min_len=1000):
 
 def render_set(model_path, name, iteration, views, scene, gaussians, pipeline, background, 
                app_model=None, max_depth=5.0, volume=None, use_depth_filter=False):
+    # box
+    js_file = f"{scene.source_path}/transforms.json"
+    bounds = None
+    if os.path.exists(js_file):
+        with open(js_file) as file:
+            meta = json.load(file)
+            if "aabb_range" in meta:
+                bounds = (np.array(meta["aabb_range"]))
     gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
     render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
     render_depth_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders_depth")
@@ -86,14 +98,13 @@ def render_set(model_path, name, iteration, views, scene, gaussians, pipeline, b
             dot = torch.sum(view_dir*depth_normal, dim=-1)
             angle = torch.acos(dot)
             mask = angle > (100.0 / 180 * 3.14159)
-            depth_tsdf[mask] = 0
+            depth_tsdf[~mask] = 0
         depths_tsdf_fusion.append(depth_tsdf.squeeze())
         
     if volume is not None:
         depths_tsdf_fusion = torch.stack(depths_tsdf_fusion, dim=0)
         for idx, view in enumerate(tqdm(views, desc="TSDF Fusion progress")):
             ref_depth = depths_tsdf_fusion[idx]
-            
             if use_depth_filter and len(view.nearest_id) > 2:
                 nearest_world_view_transforms = scene.world_view_transforms[view.nearest_id]
                 num_n = nearest_world_view_transforms.shape[0]
@@ -142,7 +153,14 @@ def render_set(model_path, name, iteration, views, scene, gaussians, pipeline, b
                 d_mask_all = (d_mask_all.sum(0) > 1)
                 ref_depth[~d_mask_all] = 0
 
-            ref_depth[ref_depth>max_depth] = 0
+            if bounds is not None:
+                pts = gaussians.get_points_from_depth(view, ref_depth)
+                unvalid_mask = (pts[...,0] < bounds[0,0]) | (pts[...,0] > bounds[0,1]) |\
+                                (pts[...,1] < bounds[1,0]) | (pts[...,1] > bounds[1,1]) |\
+                                (pts[...,2] < bounds[2,0]) | (pts[...,2] > bounds[2,1])
+                unvalid_mask = unvalid_mask.reshape(H,W)
+                ref_depth[unvalid_mask] = 0
+
             ref_depth = ref_depth.detach().cpu().numpy()
             
             pose = np.identity(4)
@@ -167,8 +185,19 @@ def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParam
         # app_model.eval()
         # app_model.cuda()
 
+        bounds = None
+        js_file = f"{scene.source_path}/transforms.json"
+        if os.path.exists(js_file):
+            with open(js_file) as file:
+                meta = json.load(file)
+                if "aabb_range" in meta:
+                    bounds = (np.array(meta["aabb_range"]))
+
         bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]
         background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
+        if bounds is not None:
+            max_dis = np.max(bounds[:,1]-bounds[:,0])
+            voxel_size = max_dis / 2048.0
         print(f"TSDF voxel_size {voxel_size}")
         volume = o3d.pipelines.integration.ScalableTSDFVolume(
         voxel_length=voxel_size,
@@ -180,7 +209,6 @@ def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParam
                        max_depth=max_depth, volume=volume, use_depth_filter=use_depth_filter)
             print(f"extract_triangle_mesh")
             mesh = volume.extract_triangle_mesh()
-
             path = os.path.join(dataset.model_path, "mesh")
             os.makedirs(path, exist_ok=True)
             
@@ -205,7 +233,7 @@ if __name__ == "__main__":
     parser.add_argument("--skip_train", action="store_true")
     parser.add_argument("--skip_test", action="store_true")
     parser.add_argument("--quiet", action="store_true")
-    parser.add_argument("--max_depth", default=5.0, type=float)
+    parser.add_argument("--max_depth", default=20.0, type=float)
     parser.add_argument("--voxel_size", default=0.002, type=float)
     parser.add_argument("--use_depth_filter", action="store_true")
 

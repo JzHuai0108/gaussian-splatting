@@ -8,10 +8,14 @@
 #
 # For inquiries contact  george.drettakis@inria.fr
 #
+import os, sys
+from pathlib import Path
+dir_path = Path(os.path.dirname(os.path.realpath(__file__))).parents[0]
+print(f"dir_path {dir_path}")
+sys.path.append(dir_path.__str__())
 
 import torch
 from scene import Scene
-import os
 import json
 from tqdm import tqdm
 from os import makedirs
@@ -25,19 +29,33 @@ import numpy as np
 import cv2
 import open3d as o3d
 from scene.app_model import AppModel
-import copy
+import trimesh, copy
 from collections import deque
 
-def clean_mesh(mesh, min_len=1000):
-    with o3d.utility.VerbosityContextManager(o3d.utility.VerbosityLevel.Debug) as cm:
-        triangle_clusters, cluster_n_triangles, cluster_area = (mesh.cluster_connected_triangles())
-    triangle_clusters = np.asarray(triangle_clusters)
+
+def transform_dtu_mesh(scene, mesh):
+    # Taking the biggest connected component
+    print("Taking the biggest connected component")
+    cleaned_mesh = mesh
+    triangle_clusters, cluster_n_triangles, cluster_area = cleaned_mesh.cluster_connected_triangles()
     cluster_n_triangles = np.asarray(cluster_n_triangles)
-    cluster_area = np.asarray(cluster_area)
-    triangles_to_remove = cluster_n_triangles[triangle_clusters] < min_len
-    mesh_0 = copy.deepcopy(mesh)
-    mesh_0.remove_triangles_by_mask(triangles_to_remove)
-    return mesh_0
+    largest_cluster_idx = cluster_n_triangles.argmax()
+    triangles_to_remove = np.array(triangle_clusters) != largest_cluster_idx
+    cleaned_mesh.remove_triangles_by_mask(triangles_to_remove)
+    cleaned_mesh.remove_unreferenced_vertices()
+    
+    # transform to world
+    cam_file = f"{scene.source_path}/cameras_sphere.npz"
+    scale_mat = np.identity(4)
+    if os.path.exists(cam_file):
+        camera_param = dict(np.load(cam_file))
+        scale_mat = camera_param['scale_mat_0']
+
+    vertices = np.asarray(cleaned_mesh.vertices)
+    vertices = vertices * scale_mat[0,0] + scale_mat[:3,3][None]
+    cleaned_mesh.vertices = o3d.utility.Vector3dVector(vertices)
+
+    return cleaned_mesh
 
 def render_set(model_path, name, iteration, views, scene, gaussians, pipeline, background, 
                app_model=None, max_depth=5.0, volume=None, use_depth_filter=False):
@@ -93,7 +111,6 @@ def render_set(model_path, name, iteration, views, scene, gaussians, pipeline, b
         depths_tsdf_fusion = torch.stack(depths_tsdf_fusion, dim=0)
         for idx, view in enumerate(tqdm(views, desc="TSDF Fusion progress")):
             ref_depth = depths_tsdf_fusion[idx]
-            
             if use_depth_filter and len(view.nearest_id) > 2:
                 nearest_world_view_transforms = scene.world_view_transforms[view.nearest_id]
                 num_n = nearest_world_view_transforms.shape[0]
@@ -142,7 +159,11 @@ def render_set(model_path, name, iteration, views, scene, gaussians, pipeline, b
                 d_mask_all = (d_mask_all.sum(0) > 1)
                 ref_depth[~d_mask_all] = 0
 
-            ref_depth[ref_depth>max_depth] = 0
+            if view.mask is not None:
+                ref_depth[view.mask] = 0
+            else:
+                ref_depth[ref_depth>max_depth] = 0
+
             ref_depth = ref_depth.detach().cpu().numpy()
             
             pose = np.identity(4)
@@ -180,18 +201,13 @@ def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParam
                        max_depth=max_depth, volume=volume, use_depth_filter=use_depth_filter)
             print(f"extract_triangle_mesh")
             mesh = volume.extract_triangle_mesh()
+            mesh = transform_dtu_mesh(scene, mesh)
 
             path = os.path.join(dataset.model_path, "mesh")
             os.makedirs(path, exist_ok=True)
             
             o3d.io.write_triangle_mesh(os.path.join(path, "tsdf_fusion.ply"), mesh, 
                                        write_triangle_uvs=True, write_vertex_colors=True, write_vertex_normals=True)
-            mesh = clean_mesh(mesh)
-            mesh.remove_unreferenced_vertices()
-            mesh.remove_degenerate_triangles()
-            o3d.io.write_triangle_mesh(os.path.join(path, "tsdf_fusion_post.ply"), mesh, 
-                                       write_triangle_uvs=True, write_vertex_colors=True, write_vertex_normals=True)
-
         if not skip_test:
             render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), scene, gaussians, pipeline, background)
 
@@ -214,5 +230,4 @@ if __name__ == "__main__":
 
     # Initialize system state (RNG)
     safe_state(args.quiet)
-    print(f"multi_view_num {model.multi_view_num}")
     render_sets(model.extract(args), args.iteration, pipeline.extract(args), args.skip_train, args.skip_test, args.max_depth, args.voxel_size, args.use_depth_filter)
